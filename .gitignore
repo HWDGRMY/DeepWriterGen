@@ -1,0 +1,23 @@
+# 原始数据与特征（只忽略具体文件，保留空文件夹）
+data/raw/*
+!data/raw/.gitkeep
+!data/raw/**/.gitkeep
+
+data/features/*.npy
+
+# 训练产出物
+outputs/checkpoints/*.pth
+outputs/logs/*.csv
+outputs/results/*.png
+
+# 系统与缓存文件
+__pycache__/
+*.pyc
+.venv/
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini
+
+pretrained/*
+!pretrained/.gitkeep
