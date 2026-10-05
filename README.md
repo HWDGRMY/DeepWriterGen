@@ -1,10 +1,14 @@
-# GitHub - HWDGRMY/DeepWriterGen: 开集在线手写生成，基于预训练书写者识别骨干的整页轨迹扩散模型
+# DeepWriterGen
 
 ## 项目简介
 
-**DeepWriterGen** 是一个面向**开集在线手写生成**的整页轨迹合成系统。它复用 DeepWriterID-v2 的 ConvNeXt V2-Femto 风格编码器，结合 1D U-Net 扩散模型，实现**未见书写者**的整页手写轨迹（.wptt）生成。
+**DeepWriterGen** 是一个面向 **开集在线手写生成** 的整页轨迹合成框架。它复用 DeepWriterID-v2 的 ConvNeXt V2-Femto 作为风格编码器，结合 1D U-Net 扩散模型，实现未见书写者的整页手写轨迹（.wptt）生成。
 
-本项目解决了在线手写生成领域的核心难题：**如何从少量参考页中提取可迁移的书写风格，并生成结构正确、风格一致的整页文本。** 与闭集识别不同，开集生成要求模型在测试时面对训练中从未见过的书写者，仅凭 4 页参考，就能生成该书写者的整页手写。
+本项目的核心思路：
+- **行级生成**：从整页 .wptt 中拆出每行，以行为单位训练和生成，避免字符级切分难题。
+- **字宽归一化**：以平均字宽为归一化单位，使模型学到与物理尺寸无关的轨迹形状。
+- **用户可控分行**：不训练布局模型，推理时用户指定分行（或按字数自动分行）。
+- **开集设定**：训练、验证、测试使用完全不同的书写者。
 
 > **风格编码器来源**：https://github.com/HWDGRMY/DeepWriterID-v2  
 > **数据解析工具**：https://github.com/HWDGRMY/casia-toolkit
@@ -13,112 +17,90 @@
 
 ## 核心特点
 
-- **开集生成**：训练时未见书写者，测试时仅用 4 页参考，即可生成该书写者的整页轨迹。
-- **风格-内容解耦**：复用 DeepWriterID-v2 的 512 维风格向量，通过 StyleAdapter 适配生成任务。
-- **分层生成**：布局生成器（LSTM）负责字符排列，字符生成器（1D U-Net 扩散）负责单字轨迹。
-- **整页时序**：输出完整的 .wptt 时序点序列，含抬笔/落笔标记，可直接用于渲染或进一步分析。
-- **零额外标注**：不需要笔画级或部件级标注，仅用 .wptt 原始文件即可训练。
+- **开集生成**：训练时未见书写者，测试时仅用其风格向量即可生成该书写者的轨迹。
+- **行级扩散模型**：1D U-Net 条件扩散，参数约 23M，训练稳定。
+- **字宽归一化**：坐标除以平均字宽，一个字跨度 ≈ 1.0，模型学形状而非像素。
+- **灵活的推理接口**：支持手动指定分行，或按每行字数自动分行。
+- **兼容 .wptt**：生成的归一化轨迹可通过后处理转为 .wptt 格式。
 
 ---
 
-## 核心成绩
+## 当前状态
 
-> **当前状态**：项目框架已搭建完成，训练与评估进行中。
-
-| 指标 | 目标 |
-|------|------|
-| 生成轨迹 MSE | 待填 |
-| DTW（Dynamic Time Warping） | 待填 |
-| Content Score（字符正确率） | 待填 |
-| Style Score（风格相似度） | 待填 |
-
-**参考基线**：
-- **DLG (ICLR 2025)**：分层布局+字形生成，在 CASIA-OLHWDB 上验证了开集生成可行性。
-- **DNA (WACV 2026)**：双分支网络，在未见书写者和未见字符任务上达到 SOTA。
-- **SDT (CVPR 2023)**：风格解耦 Transformer，Style Score 达 94.5%。
+- ✅ 数据预处理（`preprocess_gen.py`）：生成 `metadata_gen.csv` 和 `char_map.json`
+- ✅ 风格向量提取（`precompute_style.py`）：多进程提取 1019 位书写者
+- ✅ Line Diffusion 训练（`train_gen.py`）：训练框架完成，正在训练中
+- ⏳ 定量评估（DTW / Content Score / Style Score）：待训练完成后补充
+- ⏳ 生成可视化（`generate_page.py`）：已提供生成和可视化脚本
 
 ---
 
-## 📊 数据集说明
+## 数据集说明
 
-本项目使用 **CASIA-OLHWDB 2.0-2.2 在线手写文本数据集**，与 DeepWriterID-v2 完全对齐。
+使用 **CASIA-OLHWDB 2.0-2.2** 在线手写文本数据集。
 
-对比维度 | 说明 |
+| 项 | 值 |
 |---|---|
-| **作者数量** | **1019 位** 书写者 |
-| **每位作者页数** | **5 页**（4 页训练参考 + 1 页测试目标） |
-| **文本内容** | **内容各不相同**（不同新闻、古诗模板） |
-| **训练样本量** | 约 **120 万** 个动态增强伪字符 |
+| 书写者总数 | 1019 位 |
+| 每位书写者页数 | 约 5 页 |
+| 划分方式 | 按书写者不重叠划分 |
+| 训练集 | 700 位（3497 页） |
+| 验证集 | 150 位（750 页） |
+| 测试集 | 169 位（845 页） |
+| 预处理后总行数 | 约 36000 行（训练）|
 
-**数据划分**：
-- **训练集**：700 位书写者（每位 5 页）
-- **验证集**：150 位书写者（每位 5 页）
-- **测试集**：169 位书写者（每位 5 页）
-
-> **注**：训练/验证/测试的书写者完全不重叠，符合开集生成设定。
-
----
-
-## 📁 项目目录结构
+## 项目目录结构
 
 ```
 DeepWriterGen/
-├── configs/                            # 参数配置
-│   ├── convnext.yaml                   # 风格编码器配置（复用 v2）
-│   └── diffusion.yaml                  # 扩散生成器超参数
+├── configs/
+│   └── diffusion.yaml              # 扩散模型超参数
 ├── data/
-│   ├── raw/                            # 原始 .wptt 轨迹
+│   ├── raw/                        # 原始 .wptt（需自行下载）
 │   ├── features/
-│   │   ├── metadata.csv                # 数据划分（复用 v2）
-│   │   ├── char_map.json               # 字符到 ID 映射
-│   │   └── style_vectors.pt            # 预计算的风格向量
-│   └── page_cache/                     # 整页伪字符/布局缓存
+│   │   ├── metadata_gen.csv        # 数据划分（已上传）
+│   │   ├── char_map.json           # 字符表（不上传）
+│   │   └── style_vectors.pt        # 风格向量（不上传）
+│   └── page_cache/                 # 预处理缓存（可选）
 ├── src/
 │   ├── data/
-│   │   ├── loader.py                   # 解析 .wptt（含结构信息）
-│   │   ├── page_dataset.py             # 整页轨迹数据集
-│   │   └── layout_utils.py             # 轨迹重采样、bbox 计算
+│   │   ├── loader.py               # .wptt 解析（行结构）
+│   │   └── line_dataset.py         # 行级数据集
 │   ├── models/
-│   │   ├── backbone.py                 # ConvNeXt V2-Femto（复用 v2）
-│   │   ├── style_adapter.py            # 风格向量适配 MLP
-│   │   ├── layout_generator.py         # LSTM 布局生成器
-│   │   ├── diffusion_unet.py           # 1D U-Net 去噪器
-│   │   └── diffusion_sampler.py        # DDIM 采样
+│   │   ├── backbone.py             # ConvNeXt V2 风格编码器（复用 v2）
+│   │   ├── diffusion_unet.py       # 1D U-Net 去噪器
+│   │   ├── diffusion_sampler.py    # DDIM 采样
+│   │   └── style_adapter.py        # 风格向量适配层
 │   ├── preprocessing/
-│   │   ├── corner.py                   # 拐点检测（复用 v2）
-│   │   └── segmentation.py             # 伪字符切分（复用 v2）
+│   │   ├── corner.py               # 拐点检测
+│   │   └── segmentation.py         # 伪字符切分
 │   ├── features/
-│   │   └── path_signature.py           # 路径签名（复用 v2）
-│   ├── augmentation/
-│   │   └── drop_segment.py             # DropSegment（复用 v2）
-│   ├── training/
-│   │   └── trainer_gen.py              # 生成模型训练引擎
-│   └── evaluation/
-│       └── evaluator_gen.py            # DTW/Content/Style 评估
+│   │   └── path_signature.py       # 路径签名特征
+│   └── training/
+│       └── trainer_gen.py          # 生成模型训练引擎
 ├── scripts/
-│   ├── preprocess.py                   # 数据预处理（复用 v2）
-│   ├── preprocess_gen.py               # 生成字符映射
-│   ├── precompute_style.py             # 预计算风格向量
-│   ├── train_gen.py                    # 生成模型训练
-│   └── evaluate_gen.py                 # 生成模型评估
+│   ├── preprocess_gen.py           # 数据预处理
+│   ├── precompute_style.py         # 提取风格向量
+│   ├── train_gen.py                # 训练入口
+│   ├── generate_page.py            # 整页生成
+│   └── test_layout.py              # (已弃用) Layout 测试
 ├── outputs/
-│   ├── logs/                           # 训练日志 CSV
-│   └── checkpoints/                    # 模型权重 .pth
-├── pretrained/                         # 预训练权重
-├── environment.yml                     # Conda 环境配置
-├── setup.py                            # 包安装配置
-├── README.md                           # 项目说明
-└── LICENSE                             # MIT 许可证
+│   ├── checkpoints/                # 模型权重
+│   └── generated/                  # 生成结果
+├── environment.yml
+├── setup.py
+├── README.md
+└── .gitignore
 ```
 
 ---
 
-## 🚀 快速开始
+## 快速开始
 
 ### 1. 环境配置
 
 ```bash
-conda create -n deepwritergen python=3.9 -y
+conda create -n deepwritergen python=3.10 -y
 conda activate deepwritergen
 
 # 安装 PyTorch（根据 CUDA 版本选择）
@@ -131,198 +113,131 @@ pip install signatory --no-build-isolation  # 若编译失败
 
 ### 2. 数据准备
 
-从 CASIA 官网下载 OLHWDB 2.0-2.2：
+从 CASIA 官网下载 OLHWDB 2.0-2.2，解压到 `data/raw/`。目录结构如下：
 
-```bash
-python scripts/preprocess.py
+```
+data/raw/
+├── WPTT2.0-Train/
+├── WPTT2.0-Test/
+├── WPTT2.1-Train/
+├── WPTT2.1-Test/
+├── WPTT2.2-Train/
+└── WPTT2.2-Test/
 ```
 
-生成 `data/features/metadata.csv`，按书写者划分训练/测试集。
-
-### 3. 训练风格编码器（可选）
-
-若已有 DeepWriterID-v2 的 `convnext_best.pth`，可跳过此步；否则先训练：
-
-```bash
-python scripts/train.py --config configs/convnext.yaml
-```
-
-### 4. 预计算风格向量
-
-```bash
-python scripts/precompute_style.py
-```
-
-生成 `data/features/style_vectors.pt`。
-
-### 5. 构建字符映射
+运行预处理脚本：
 
 ```bash
 python scripts/preprocess_gen.py
 ```
 
-生成 `data/features/char_map.json`。
+生成 `data/features/metadata_gen.csv`（已上传）和 `char_map.json`（需自行生成）。
 
-### 6. 训练生成模型
+### 3. 提取风格向量
+
+需要先准备 DeepWriterID-v2 训练好的风格编码器 `convnext_best.pth`，放在 `outputs/checkpoints/` 下。
+
+```bash
+python scripts/precompute_style.py
+```
+
+生成 `data/features/style_vectors.pt`，包含 1019 位书写者的 512 维风格向量。
+
+### 4. 训练 Line Diffusion
 
 ```bash
 python scripts/train_gen.py
 ```
 
-**特性**：
-- 冻结风格编码器，只训生成器
-- Warmup + 余弦退火
-- 早停（验证集连续 20 轮未提升）
-- 最佳模型保存
+训练参数在 `configs/diffusion.yaml` 中配置。默认：
+- 100 epochs
+- batch size 32
+- 学习率 1e-4
+- 早停 patience 15
 
-### 7. 评估
+训练日志输出到终端，最佳模型保存至 `outputs/checkpoints/gen_best.pth`。
+
+### 5. 生成整页
 
 ```bash
-python scripts/evaluate_gen.py
+python scripts/generate_page.py
 ```
 
-计算 DTW、Content Score、Style Score。
+默认示例：使用第一位书写者的风格生成两行七言诗。可在脚本中修改：
 
----
+```python
+# 方式 1：直接指定分行
+lines = [
+    '落霞与孤鹜齐飞',
+    '秋水共长天一色',
+]
 
-## 🧠 方法学说明
-
-### 1. 开集设定
-
-训练时用 **700 位书写者**，验证用 **150 位**，测试用 **169 位**。三者完全不重叠。
-
-测试时，每位未见书写者提供 **4 页参考**，模型生成第 **5 页** 的整页轨迹。
-
-### 2. 分层生成架构
-
-```
-输入：文本内容 C + 风格参考 X_ref（4 页 .wptt）
-  ↓
-Layer 1: Layout Generator（LSTM）
-  - 输入：字符序列 + 风格参考的 bbox 前缀
-  - 输出：每个字符的 bounding box
-  ↓
-Layer 2: Character Generator（1D U-Net 扩散）
-  - 条件：风格向量 z_s + 字符内容 c_i + bbox
-  - 输出：该字符的轨迹点序列
-  ↓
-拼接：按布局顺序拼接所有字符轨迹，输出整页 .wptt
+# 方式 2：给定文本 + 每行字数
+text = '落霞与孤鹜齐飞秋水共长天一色'
+lines = auto_wrap(text, chars_per_line=7)
 ```
 
-### 3. 风格向量提取
-
-复用 DeepWriterID-v2 的 `ConvNeXtBackbone.forward(x, return_features=True)`：
-
-- 输入：伪字符特征图（位图 + 路径签名，64 通道）
-- 输出：512 维风格向量
-- 对每位书写者的所有页、所有伪字符取平均，得到该书写者的风格向量
-
-### 4. 过拟合判断
-
-**当前状态**：训练与评估进行中，具体过拟合判断待训练完成后补充。
-
-**预期策略**：
-- DropPath 0.1 + Dropout 0.3/0.4
-- DropSegment 数据增强
-- 早停（验证集连续 20 轮未提升）
-- 最佳模型保存
+生成结果保存为 `outputs/generated/page.npy` 和 `page.png`。
 
 ---
 
-## 📉 数据集划分与验证集说明
+## 模型架构
 
-### 1. 划分策略
+### 风格编码器（冻结）
 
-本项目采用 **按书写者划分**：
-- 训练集：700 位书写者
-- 验证集：150 位书写者
-- 测试集：169 位书写者
+- 复用 DeepWriterID-v2 的 ConvNeXt V2-Femto 骨干
+- 输出 512 维风格向量
+- 输入：伪字符的位图 + 路径签名特征图（64 通道）
 
-每位书写者保留全部 5 页，训练/验证时用 4 页参考、1 页目标。
+### Line Diffusion（训练）
 
-### 2. 与 DeepWriterID-v2 的区别
-
-DeepWriterID-v2 未划分独立验证集，每轮在测试集上评估并保存最佳模型，存在选择偏差。
-
-本项目**引入了独立验证集**，用于早停、选模型、调超参，测试集只在最后用一次，从而获得更接近无偏的泛化估计。
-
----
-
-## 📦 模型文件说明
-
-模型权重不包含在 GitHub 仓库中，原因：
-
-1. **算力成本**：训练消耗大量云端算力
-2. **模型资产保护**：风格编码器基于 DeepWriterID-v2，生成器为独立训练成果
-
-### 📎 如何获取
-
-- **GitHub Issues**：新建 Issue 说明用途
-- **邮件**：`zhouhao_oss@163.com`，附身份、用途及具体场景
-
-> **注意**：模型文件仅限申请用途使用，请勿二次分发。
+- 1D U-Net 去噪器，参数约 23M
+- 条件：风格向量（StyleAdapter 适配）+ 行文本嵌入（双向 LSTM）
+- 输入：噪声轨迹 (B, 2, L)，L=256
+- 输出：预测噪声
+- 扩散步数：1000，DDIM 采样步数：50
 
 ---
 
-## 📜 第三方代码与引用
+## 引用
 
-### DeepWriterID-v2（风格编码器）
+如果本工作对你有帮助，请引用相关论文与仓库：
 
-- **仓库**：https://github.com/HWDGRMY/DeepWriterID-v2
-- **许可证**：MIT
+```bibtex
+@misc{deepwriterid_v2,
+  author = {HWDGRMY},
+  title = {DeepWriterID v2.0: ConvNeXt-based writer identification},
+  year = {2026},
+  publisher = {GitHub},
+  howpublished = {\url{https://github.com/HWDGRMY/DeepWriterID-v2}}
+}
+```
 
-### casia-toolkit（数据解析）
-
-- **仓库**：https://github.com/HWDGRMY/casia-toolkit
-- **许可证**：MIT
-
-### timm（PyTorch Image Models）
-
-- **仓库**：https://github.com/huggingface/pytorch-image-models
-- **许可证**：Apache License 2.0
-
-### ConvNeXt V2
-
-- **论文**：Woo et al., *ConvNeXt V2: Co-designing and Scaling ConvNets with Masked Autoencoders*, CVPR 2023
-- **仓库**：https://github.com/facebookresearch/ConvNeXt-V2
-- **许可证**：MIT（代码）
-
-### DLG (ICLR 2025)
-
-- **论文**：Ren et al., *Decoupling Layout from Glyph in Online Chinese Handwriting Generation*, ICLR 2025
-- **参考**：分层布局+字形生成架构
-
-### DNA (WACV 2026)
-
-- **论文**：Huang et al., *DNA: Dual-branch Network with Adaptation for Open-Set Online Handwriting Generation*, WACV 2026
-- **参考**：双分支风格-内容解耦
-
-### SDT (CVPR 2023)
-
-- **论文**：Dai et al., *Disentangling Writer and Character Styles for Handwriting Generation*, CVPR 2023
-- **参考**：WriterNCE 对比学习
+相关论文：
+- DLG: Ren et al., *Decoupling Layout from Glyph in Online Chinese Handwriting Generation*, ICLR 2025.
+- Diff-Font: He et al., *Diff-Font: Diffusion Model for Robust One-Shot Font Generation*, IJCV 2024.
+- SDT: Dai et al., *Disentangling Writer and Character Styles for Handwriting Generation*, CVPR 2023.
 
 ---
 
-## 🙏 致谢
+## 致谢
 
+- 原始论文：Weixin Yang, Lianwen Jin, et al. *DeepWriterID: An End-to-end Online Text-independent Writer Identification System*.
 - 数据集：中国科学院自动化研究所 CASIA-OLHWDB 手写数据库。
 - 风格编码器：DeepWriterID-v2 (ConvNeXt V2-Femto)。
 - 数据解析：casia-toolkit。
-- 生成架构参考：DLG (ICLR 2025)、DNA (WACV 2026)、SDT (CVPR 2023)。
+- 扩散模型参考：DLG (ICLR 2025)、Diff-Font (IJCV 2024)。
 
 ---
 
-## 💬 反馈与建议
+## 反馈与建议
 
-如果你在使用本项目的过程中遇到任何问题，或者有更好的改进思路（比如更高效的风格解耦、更优的采样策略等），非常欢迎你在 GitHub 上提交 **Issue** 或直接发起 **Pull Request**。
+如果你在使用本项目的过程中遇到任何问题，或者有更好的改进思路，欢迎在 GitHub 上提交 **Issue** 或 **Pull Request**。
 
-**其他联系方式**：也可以通过作者邮箱 `zhouhao_oss@163.com` 与我沟通。
-
-我可能不会及时回复每一条消息，但所有有价值的建议都会认真考虑，并用于后续的迭代和优化。如果你在跑这个项目时卡在了某个环节，也欢迎在 Issues 里提问。
+**其他联系方式**：`zhouhao_oss@163.com`
 
 ---
 
-## 📄 许可证
+## 许可证
 
 本项目采用 MIT 许可证。

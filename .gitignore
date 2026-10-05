@@ -1,23 +1,42 @@
-# 原始数据与特征（只忽略具体文件，保留空文件夹）
+# ==================== Python ====================
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ==================== IDE ====================
+.idea/
+.vscode/
+*.swp
+
+# ==================== 系统文件 ====================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ==================== 环境变量 ====================
+.env
+
+# ==================== 原始数据（.wptt 太大） ====================
 data/raw/*
 !data/raw/.gitkeep
 !data/raw/**/.gitkeep
 
+# ==================== 预处理缓存 ====================
+data/page_cache/
+
+# ==================== 预处理产物：不上传 pt / json / npy，csv 上传 ====================
+data/features/*.pt
+data/features/*.json
 data/features/*.npy
 
-# 训练产出物
+# ==================== 模型权重 ====================
+pretrained/*
+!pretrained/.gitkeep
+
 outputs/checkpoints/*.pth
 outputs/logs/*.csv
 outputs/results/*.png
-
-# 系统与缓存文件
-__pycache__/
-*.pyc
-.venv/
-.idea/
-.vscode/
-Thumbs.db
-desktop.ini
-
-pretrained/*
-!pretrained/.gitkeep
+outputs/generated/
