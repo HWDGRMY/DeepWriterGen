@@ -1,32 +1,18 @@
 model:
   style_dim: 512
-  char_embed_dim: 128
-  bbox_dim: 4
-  unet_channels: [64, 128, 256, 512]
-  diffusion_steps: 1000
-  beta_schedule: "linear"
 
 data:
-  seq_len: 100          # 每个字符重采样到固定长度
-  batch_size: 64
-  num_workers: 8
+  seq_len: 256
+  max_line_len: 32
+  batch_size: 32
+  num_workers: 0
 
 training:
-  epochs: 200
-  lr: 1e-4
+  line_epochs: 100
+  line_lr: 0.0001
   weight_decay: 0.05
-  warmup_epochs: 1
-  eval_frequency: 5
-  patience: 20
-  device: "cuda"
-
-checkpoint:
-  save_dir: "outputs/checkpoints"
-  save_latest: "gen_latest.pth"
-  save_best: "gen_best.pth"
-
-logging:
-  log_dir: "outputs/logs"
-  log_file: "gen_training_log.csv"
+  eval_frequency: 2
+  patience: 15
+  line_save_path: "outputs/checkpoints/gen_best.pth"
 
 seed: 42

@@ -1,7 +1,6 @@
 import math
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class SinusoidalPosEmb(nn.Module):
@@ -11,158 +10,131 @@ class SinusoidalPosEmb(nn.Module):
 
     def forward(self, x):
         device = x.device
-        half_dim = self.dim // 2
-        emb = math.log(10000) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
+        half = self.dim // 2
+        emb = math.log(10000) / (half - 1)
+        emb = torch.exp(torch.arange(half, device=device) * -emb)
         emb = x[:, None] * emb[None, :]
-        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
-        return emb
+        return torch.cat((emb.sin(), emb.cos()), dim=-1)
 
 
 class ResBlock1D(nn.Module):
-    def __init__(self, in_ch, out_ch, time_emb_dim, dropout=0.1):
+    def __init__(self, in_ch, out_ch, t_dim, dropout=0.1):
         super().__init__()
         self.conv1 = nn.Conv1d(in_ch, out_ch, 3, padding=1)
         self.conv2 = nn.Conv1d(out_ch, out_ch, 3, padding=1)
-        self.time_mlp = nn.Linear(time_emb_dim, out_ch)
+        self.time_mlp = nn.Linear(t_dim, out_ch)
         self.norm1 = nn.GroupNorm(8, out_ch)
         self.norm2 = nn.GroupNorm(8, out_ch)
-        self.dropout = nn.Dropout(dropout)
+        self.drop = nn.Dropout(dropout)
         self.act = nn.SiLU()
         self.skip = nn.Conv1d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
-    def forward(self, x, t_emb):
-        h = self.conv1(x)
-        h = self.norm1(h)
-        h = self.act(h)
-        h = h + self.time_mlp(t_emb)[:, :, None]
-        h = self.conv2(h)
-        h = self.norm2(h)
-        h = self.act(h)
-        h = self.dropout(h)
-        return h + self.skip(x)
+    def forward(self, x, t):
+        h = self.act(self.norm1(self.conv1(x)))
+        h = h + self.time_mlp(t)[:, :, None]
+        h = self.act(self.norm2(self.conv2(h)))
+        return self.skip(x) + self.drop(h)
 
 
-class CrossAttention1D(nn.Module):
-    def __init__(self, dim, context_dim, heads=8, dim_head=64):
+class CrossAttn1D(nn.Module):
+    """修复版 CrossAttention。"""
+    def __init__(self, dim, ctx_dim, heads=4, dim_head=64):
         super().__init__()
-        self.scale = dim_head ** -0.5
         self.heads = heads
-        inner_dim = heads * dim_head
-        self.to_q = nn.Linear(dim, inner_dim, bias=False)
-        self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
-        self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
-        self.to_out = nn.Linear(inner_dim, dim)
+        self.dim_head = dim_head
+        self.scale = dim_head ** -0.5
+        inner = heads * dim_head
+        self.to_q = nn.Linear(dim, inner, bias=False)
+        self.to_k = nn.Linear(ctx_dim, inner, bias=False)
+        self.to_v = nn.Linear(ctx_dim, inner, bias=False)
+        self.to_out = nn.Linear(inner, dim)
 
-    def forward(self, x, context):
-        # x: (B, C, L), context: (B, S, C_ctx)
+    def forward(self, x, ctx):
         B, C, L = x.shape
-        q = self.to_q(x.permute(0, 2, 1))  # (B, L, inner)
-        k = self.to_k(context)  # (B, S, inner)
-        v = self.to_v(context)
-        q = q.view(B, L, self.heads, -1).transpose(1, 2)
-        k = k.view(B, -1, self.heads, -1).transpose(1, 2)
-        v = v.view(B, -1, self.heads, -1).transpose(1, 2)
+        S = ctx.shape[1]
+        q = self.to_q(x.permute(0, 2, 1))
+        k = self.to_k(ctx)
+        v = self.to_v(ctx)
+        q = q.view(B, L, self.heads, self.dim_head).transpose(1, 2)
+        k = k.view(B, S, self.heads, self.dim_head).transpose(1, 2)
+        v = v.view(B, S, self.heads, self.dim_head).transpose(1, 2)
         attn = torch.softmax(q @ k.transpose(-2, -1) * self.scale, dim=-1)
         out = attn @ v
         out = out.transpose(1, 2).reshape(B, L, -1)
-        out = self.to_out(out)
-        return out.permute(0, 2, 1)  # (B, C, L)
+        return self.to_out(out).permute(0, 2, 1)
 
 
 class DiffusionUNet1D(nn.Module):
-    def __init__(self, in_channels=2, out_channels=2, style_dim=512, char_embed_dim=128,
-                 bbox_dim=4, base_channels=64, channel_mults=(1, 2, 4, 8), num_res_blocks=2,
-                 time_emb_dim=256, dropout=0.1):
+    def __init__(self, in_ch=2, out_ch=2, style_dim=512,
+                 num_chars=2000, text_dim=64, text_hidden=128,
+                 base=64, mults=(1, 2, 4, 8), n_res=2,
+                 t_dim=256, dropout=0.1, attn_heads=4):
         super().__init__()
-        self.in_channels = in_channels
         self.time_emb = nn.Sequential(
-            SinusoidalPosEmb(time_emb_dim),
-            nn.Linear(time_emb_dim, time_emb_dim * 4),
-            nn.SiLU(),
-            nn.Linear(time_emb_dim * 4, time_emb_dim),
-        )
-        self.char_embed = nn.Embedding(5000, char_embed_dim)  # 假设字符数5000
-        self.bbox_proj = nn.Linear(bbox_dim, char_embed_dim)
-        # 条件向量拼接
-        self.cond_proj = nn.Linear(style_dim + char_embed_dim + char_embed_dim, time_emb_dim)
+            SinusoidalPosEmb(t_dim),
+            nn.Linear(t_dim, t_dim * 4), nn.SiLU(),
+            nn.Linear(t_dim * 4, t_dim))
 
-        self.init_conv = nn.Conv1d(in_channels, base_channels, 3, padding=1)
+        self.char_embed = nn.Embedding(num_chars, text_dim, padding_idx=0)
+        self.text_lstm = nn.LSTM(text_dim, text_hidden,
+                                 batch_first=True, bidirectional=True)
 
-        # Down blocks
-        self.downs = nn.ModuleList()
-        channels = [base_channels]
-        current_ch = base_channels
-        for i, mult in enumerate(channel_mults):
-            out_ch = base_channels * mult
-            for _ in range(num_res_blocks):
-                self.downs.append(ResBlock1D(current_ch, out_ch, time_emb_dim, dropout))
-                current_ch = out_ch
-                channels.append(current_ch)
-            if i != len(channel_mults) - 1:
-                self.downs.append(nn.Conv1d(current_ch, current_ch, 3, stride=2, padding=1))
-                channels.append(current_ch)
+        self.cond = nn.Sequential(
+            nn.Linear(style_dim + text_hidden * 2, t_dim), nn.SiLU(),
+            nn.Linear(t_dim, t_dim))
 
-        # Middle
-        self.mid1 = ResBlock1D(current_ch, current_ch, time_emb_dim, dropout)
-        self.mid_attn = CrossAttention1D(current_ch, time_emb_dim)
-        self.mid2 = ResBlock1D(current_ch, current_ch, time_emb_dim, dropout)
+        self.init = nn.Conv1d(in_ch, base, 3, padding=1)
+        self.down = nn.ModuleList()
+        chs = [base]
+        cur = base
+        for i, m in enumerate(mults):
+            oc = base * m
+            for _ in range(n_res):
+                self.down.append(ResBlock1D(cur, oc, t_dim, dropout))
+                cur = oc
+                chs.append(cur)
+            if i != len(mults) - 1:
+                self.down.append(nn.Conv1d(cur, cur, 3, 2, 1))
+                chs.append(cur)
 
-        # Up blocks
-        self.ups = nn.ModuleList()
-        for i, mult in reversed(list(enumerate(channel_mults))):
-            out_ch = base_channels * mult
-            for _ in range(num_res_blocks + 1):
-                self.ups.append(ResBlock1D(current_ch + channels.pop(), out_ch, time_emb_dim, dropout))
-                current_ch = out_ch
+        self.mid1 = ResBlock1D(cur, cur, t_dim, dropout)
+        self.mid_a = CrossAttn1D(cur, t_dim, heads=attn_heads, dim_head=64)
+        self.mid2 = ResBlock1D(cur, cur, t_dim, dropout)
+
+        self.up = nn.ModuleList()
+        for i, m in reversed(list(enumerate(mults))):
+            oc = base * m
+            for _ in range(n_res + 1):
+                self.up.append(ResBlock1D(cur + chs.pop(), oc, t_dim, dropout))
+                cur = oc
             if i != 0:
-                self.ups.append(nn.ConvTranspose1d(current_ch, current_ch, 4, stride=2, padding=1))
+                self.up.append(nn.ConvTranspose1d(cur, cur, 4, 2, 1))
 
         self.out = nn.Sequential(
-            nn.GroupNorm(8, current_ch),
-            nn.SiLU(),
-            nn.Conv1d(current_ch, out_channels, 3, padding=1)
-        )
+            nn.GroupNorm(8, cur), nn.SiLU(),
+            nn.Conv1d(cur, out_ch, 3, padding=1))
 
-    def forward(self, x, t, style_vec, char_ids, bboxes):
-        """
-        x: (B, 2, L) 噪声轨迹
-        t: (B,) 时间步
-        style_vec: (B, style_dim)
-        char_ids: (B,) 字符ID
-        bboxes: (B, 4) bbox
-        """
-        B, C, L = x.shape
-        t_emb = self.time_emb(t)  # (B, time_emb_dim)
-        char_emb = self.char_embed(char_ids)  # (B, char_embed_dim)
-        bbox_emb = self.bbox_proj(bboxes)  # (B, char_embed_dim)
-        cond = torch.cat([style_vec, char_emb, bbox_emb], dim=-1)
-        cond_emb = self.cond_proj(cond)  # (B, time_emb_dim)
-        cond_emb = cond_emb + t_emb  # 融合
+    def forward(self, x, t, style_vec, text_ids):
+        t_emb = self.time_emb(t)
+        emb = self.char_embed(text_ids)
+        _, (h, _) = self.text_lstm(emb)
+        txt = torch.cat([h[0], h[1]], dim=-1)
+        cond = self.cond(torch.cat([style_vec, txt], dim=-1)) + t_emb
 
-        h = self.init_conv(x)
+        h = self.init(x)
         skips = [h]
-
-        # Down
-        for layer in self.downs:
-            if isinstance(layer, ResBlock1D):
-                h = layer(h, cond_emb)
-            else:
-                h = layer(h)
+        for l in self.down:
+            h = l(h, cond) if isinstance(l, ResBlock1D) else l(h)
             skips.append(h)
 
-        # Middle
-        h = self.mid1(h, cond_emb)
-        h = self.mid_attn(h, cond_emb[:, None, :])  # 将cond作为context
-        h = self.mid2(h, cond_emb)
+        h = self.mid1(h, cond)
+        h = self.mid_a(h, cond[:, None, :])
+        h = self.mid2(h, cond)
 
-        # Up
-        for layer in self.ups:
-            if isinstance(layer, ResBlock1D):
-                skip = skips.pop()
-                h = torch.cat([h, skip], dim=1)
-                h = layer(h, cond_emb)
+        for l in self.up:
+            if isinstance(l, ResBlock1D):
+                h = torch.cat([h, skips.pop()], 1)
+                h = l(h, cond)
             else:
-                h = layer(h)
-
+                h = l(h)
         return self.out(h)
